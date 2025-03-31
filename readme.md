@@ -4,6 +4,8 @@ A browser-based music programming environment for creating music and sound with 
 
 https://horrelltech.github.io/HarmoniCode/
 
+WIKI: https://github.com/HorrellTech/HarmoniCode/wiki
+
 ## Overview
 
 HarmoniCode is a creative coding environment that lets you generate music using a simple, intuitive programming language called SoundScript. Write a few lines of code and instantly hear your musical creations come to life with real-time audio synthesis.
