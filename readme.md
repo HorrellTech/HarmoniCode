@@ -39,31 +39,39 @@ HarmoniCode leverages Web Audio API and Tone.js to handle audio synthesis direct
 Open your browser to http://localhost:3000
 
 ## 💻 Example Code
-// Define a bass synth bass: 
-volume 80 pan -0.4 
-tone c2 0.5 
-wait 0.5 
-tone g2 0.5 
-wait 0.5 
-tone c2 0.5 
-wait 0.5 
+
+```javascript
+// Define a bass synth
+bass: 
+  volume 80 
+  pan -0.4 
+  tone c2 0.5 
+  wait 0.5 
+  tone g2 0.5 
+  wait 0.5 
+  tone c2 0.5 
+  wait 0.5 
 end bass
 
-// Define a melody with reverb melody: 
-volume 70 
-reverb 0.6 0.7 0.8 1.0 
-tone c4 0.25 
-wait 0.25 
-tone e4 0.25 
-wait 0.25 
-tone g4 0.25 
-wait 0.25 
-tone c5 0.5 
+// Define a melody with reverb
+melody: 
+  volume 70 
+  reverb 0.6 0.7 0.8 1.0 
+  tone c4 0.25 
+  wait 0.25 
+  tone e4 0.25 
+  wait 0.25 
+  tone g4 0.25 
+  wait 0.25 
+  tone c5 0.5 
 end melody
 
-// Main program main: 
-bpm 120 
-play together bass melody end main
+// Main program
+main: 
+  bpm 120 
+  play together bass melody 
+end main
+```
 
 ## 🛠️ Technology Stack
 
