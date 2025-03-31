@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HarmoniCode - Code Based Music Generator</title>
+    <link rel="stylesheet" href="styles.css">
+    <!-- CodeMirror for code editor -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/theme/material-darker.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.2/mode/javascript/javascript.min.js"></script>
+    <!-- Tone.js for audio synthesis -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <!-- Our scripts -->
+    <script src="keywords.js"></script>
+    <script src="examples.js"></script>
+    <script src="soundscript.js"></script>
+    <script src="soundscript-mode.js"></script>
+    <script src="audioProcessors.js"></script>
+    <script src="app.js"></script>
+
+    <script>
+        // Pre-initialize audio context to allow worklet loading
+        window.AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (window.AudioContext) {
+            window.audioCtx = new AudioContext();
+            
+            // Suspend until user interaction
+            if (window.audioCtx.state !== 'suspended') {
+                window.audioCtx.suspend();
+            }
+            
+            // Attempt to preload audio worklet
+            if (window.audioCtx.audioWorklet) {
+                try {
+                    // Preload worklet - this might help reduce first-play crackling
+                    window.audioCtx.audioWorklet.addModule('data:text/javascript;base64,Y2xhc3MgRW1wdHlQcm9jZXNzb3IgZXh0ZW5kcyBBdWRpb1dvcmtsZXRQcm9jZXNzb3Ige2NvbnN0cnVjdG9yKG9wdGlvbnMpe3N1cGVyKG9wdGlvbnMpfXByb2Nlc3MoaW5wdXRzLG91dHB1dHMscGFyYW1ldGVycyl7cmV0dXJuIHRydWV9fXJlZ2lzdGVyUHJvY2Vzc29yKCJlbXB0eS1wcm9jZXNzb3IiLEVtcHR5UHJvY2Vzc29yKQ==');
+                } catch (e) {
+                    console.log('AudioWorklet preloading not supported');
+                }
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>HarmoniCode</h1>
+            <p>Code-based Music Generator</p>
+        </header>
+
+        <main>
+            <div class="editor-container">
+                <h2>Code</h2>
+                <textarea id="code-editor">// SoundScript with synth grouping, panning, auto effects, and audio effects
+
+// Define a bass synth
+bass:
+  volume 80
+  pan -0.4
+  tone c2 0.5
+  wait 0.5
+  tone g2 0.5
+  wait 0.5
+  tone c2 0.5
+  wait 0.5
+  tone g2 0.5
+end bass
+
+// Define a melody synth with auto-panning and reverb
+melody:
+  volume 70
+  autopan 0.5 0.8  // 0.5Hz speed, 0.8 panning width
+  reverb 0.6 0.7 0.8 1.0  // wet, dry, space, strength
+  tone c4 0.25
+  wait 0.25
+  tone e4 0.25
+  wait 0.25
+  tone g4 0.25
+  wait 0.25
+  tone c5 0.5
+end melody
+
+// Define a rhythm synth with auto-volume pulsing and delay
+rhythm:
+  // Auto-volume min:50% max:80% speed:4Hz
+  autovolume 50 80 4
+  pan 0.5
+  // delay: time, life, pingpong mode, pingpong strength, overall strength
+  delay 0.25 2.0 1 0.7 0.4
+  loop 4
+    tone a3 0.125
+    wait 0.125
+    tone a3 0.125
+    wait 0.125
+  end
+end rhythm
+
+// Main program that plays the synths
+main:
+  bpm 120  // Set beats per minute
+
+  // Play bass alone first
+  play bass
+  waitforfinish
+    
+  // Play melody alone with auto-panning and reverb
+  play melody
+  waitforfinish
+  
+  // Now play all three together
+  play together bass melody rhythm
+end main</textarea>
+
+                <!-- Add keyword help box below the editor -->
+                <div id="keyword-help" class="keyword-help-box">
+                    <div class="help-title">Command Help</div>
+                    <div id="help-content" class="help-content">
+                        <p class="help-placeholder">Hover over or place cursor on a command to see help</p>
+                    </div>
+                </div>
+
+                <div class="console-container">
+                    <h3>Console</h3>
+                    <div id="console-output"></div>
+                </div>
+            </div>
+
+            <div class="controls-container">
+                <div class="playback-controls">
+                    <button id="generate-btn" class="primary-btn">▶ Generate & Play</button>
+                    <button id="stop-btn">■ Stop</button>
+                    <button id="force-stop-btn">■■ Force Stop</button>
+                    <button id="download-btn">⬇ Download WAV</button>
+                    <!--div class="export-preview">
+                        <h4>Export Preview</h4>
+                        <canvas id="export-waveform" width="600" height="100"></canvas>
+                    </div-->
+                </div>
+                
+                <!-- Volume Control -->
+                <div class="volume-control">
+                    <label for="master-volume">Master Volume:</label>
+                    <input type="range" id="master-volume" min="0" max="100" value="70">
+                    <span id="volume-value">70%</span>
+                </div>
+                
+                <!-- Tabbed Interface for Audio Processors -->
+                <div class="tabs-container">
+                    <div class="tabs">
+                        <button class="tab-btn active" data-tab="compressor">Compressor</button>
+                        <button class="tab-btn" data-tab="limiter">Limiter</button>
+                        <button class="tab-btn" data-tab="samples">Samples</button>
+                        <button class="tab-btn" data-tab="examples">Examples</button>
+                        <button class="tab-btn" data-tab="files">File</button>
+                    </div>
+                    
+                    <div class="tab-content active" id="compressor-tab">
+                        <div class="audio-processor compressor">
+                            <h4>Compressor</h4>
+                            <div class="processor-control">
+                                <label for="compressor-threshold">Threshold:</label>
+                                <input type="range" id="compressor-threshold" min="-60" max="0" value="-24">
+                                <span id="compressor-threshold-value">-24 dB</span>
+                            </div>
+                            <div class="processor-control">
+                                <label for="compressor-ratio">Ratio:</label>
+                                <input type="range" id="compressor-ratio" min="1" max="20" value="4">
+                                <span id="compressor-ratio-value">4:1</span>
+                            </div>
+                            <div class="processor-control">
+                                <label for="compressor-attack">Attack:</label>
+                                <input type="range" id="compressor-attack" min="0.001" max="1" step="0.001" value="0.003">
+                                <span id="compressor-attack-value">0.003s</span>
+                            </div>
+                            <div class="processor-control">
+                                <label for="compressor-release">Release:</label>
+                                <input type="range" id="compressor-release" min="0.01" max="1" step="0.01" value="0.25">
+                                <span id="compressor-release-value">0.25s</span>
+                            </div>
+                            <div class="control-toggle">
+                                <label for="compressor-enabled">Enable Compressor:</label>
+                                <input type="checkbox" id="compressor-enabled" checked>
+                            </div>
+                        </div>
+
+                        <div class="processor-visualization">
+                            <div class="processor-graph" id="compressor-graph">
+                              <div class="threshold-line"></div>
+                              <div class="ratio-line"></div>
+                              <div class="processor-signal"></div>
+                            </div>
+                            <div class="reduction-meter-container">
+                              <label>Gain Reduction:</label>
+                              <div class="reduction-meter" id="compressor-meter">
+                                <div class="reduction-bar"></div>
+                                <div class="reduction-value">0 dB</div>
+                              </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-content" id="limiter-tab">
+                        <div class="audio-processor limiter">
+                            <h4>Limiter</h4>
+                            <div class="processor-control">
+                                <label for="limiter-threshold">Threshold:</label>
+                                <input type="range" id="limiter-threshold" min="-60" max="0" value="-3">
+                                <span id="limiter-threshold-value">-3 dB</span>
+                            </div>
+                            <div class="processor-control">
+                                <label for="limiter-release">Release:</label>
+                                <input type="range" id="limiter-release" min="0.01" max="1" step="0.01" value="0.1">
+                                <span id="limiter-release-value">0.1s</span>
+                            </div>
+                            <div class="control-toggle">
+                                <label for="limiter-enabled">Enable Limiter:</label>
+                                <input type="checkbox" id="limiter-enabled" checked>
+                            </div>
+                        </div>
+
+                        <div class="processor-visualization">
+                            <div class="processor-graph" id="limiter-graph">
+                              <div class="threshold-line"></div>
+                              <div class="processor-signal"></div>
+                            </div>
+                            <div class="reduction-meter-container">
+                              <label>Gain Reduction:</label>
+                              <div class="reduction-meter" id="limiter-meter">
+                                <div class="reduction-bar"></div>
+                                <div class="reduction-value">0 dB</div>
+                              </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="tab-content" id="samples-tab">
+                        <div class="samples-container">
+                            <h4>Sound Samples</h4>
+                            <div class="samples-browser">
+                                <div class="samples-tree"></div>
+                                <div class="samples-preview">
+                                    <div class="sample-info">
+                                        <span class="sample-path"></span>
+                                        <button class="copy-path-btn" title="Copy sample path">📋</button>
+                                    </div>
+                                    <audio id="sample-preview" controls></audio>
+                                </div>
+                            </div>
+                            <div class="sample-upload">
+                                <label for="sample-upload" class="upload-btn">+ Add Custom Sample</label>
+                                <input type="file" id="sample-upload" accept="audio/*" multiple>
+                            </div>
+                            <div id="samples-list"></div>
+                        </div>
+                    </div>
+
+                    <!-- Add new Examples tab content -->
+                    <div class="tab-content" id="examples-tab">
+                        <div class="examples-container">
+                            <h4>Example Scripts</h4>
+                            <div class="examples-list" id="examples-list">
+                                <!-- Examples will be listed here dynamically -->
+                                <div class="loading-message">Loading examples...</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Add new File Operations tab content -->
+                    <div class="tab-content" id="files-tab">
+                        <div class="file-operations">
+                            <h4>File Operations</h4>
+                            <div class="file-operations-buttons">
+                                <button id="save-script-btn" class="operation-btn">💾 Save Script (.ss)</button>
+                                <button id="load-script-btn" class="operation-btn">📂 Load Script</button>
+                                <input type="file" id="load-script-input" accept=".ss,.txt" style="display: none;">
+                            </div>
+                            <div class="file-info" id="file-info">
+                                <!-- File info will be displayed here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Add help modal dialog -->
+        <div id="help-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>SoundScript Commands Reference</h3>
+                    <span class="close-modal">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div class="search-box">
+                        <input type="text" id="command-search" placeholder="Search commands...">
+                    </div>
+                    <div id="command-list" class="command-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Help button in corner -->
+        <button id="help-button" class="help-button">?</button>
+        
+        <div class="visualizer-container">
+            <h3>Audio Visualizers</h3>
+            <div class="visualizers-wrapper">
+                <div class="visualizer-box">
+                    <label>Waveform</label>
+                    <canvas id="waveform-visualizer"></canvas>
+                </div>
+                <div class="visualizer-box">
+                    <label>Frequency</label>
+                    <canvas id="frequency-visualizer"></canvas>
+                </div>
+            </div>
+        </div>
+
+        
+    </div>
+</body>
+</html>
