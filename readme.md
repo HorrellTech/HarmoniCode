@@ -11,7 +11,6 @@ HarmoniCode is a creative coding environment that lets you generate music using 
 ## ✨ Features
 
 - **SoundScript Language** - Write music with an easy-to-learn syntax designed specifically for sound generation
-- **Real-time Audio** - Hear your compositions instantly as you code them
 - **Audio Visualizers** - See your sound with waveform and frequency spectrum displays
 - **Professional Audio Processing** - Shape your sound with built-in compressor and limiter
 - **Sample Support** - Incorporate your own audio samples into compositions
