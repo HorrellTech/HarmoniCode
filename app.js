@@ -358,95 +358,115 @@ document.addEventListener('DOMContentLoaded', function () {
                     // Clear both visualizer canvases
                     waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
                     frequencyCtx.clearRect(0, 0, frequencyCanvas.width, frequencyCanvas.height);
-    
+        
                     // Reset processor visualizers
                     document.querySelectorAll('.processor-signal').forEach(el => el.classList.remove('active'));
                     document.querySelectorAll('.reduction-bar').forEach(el => el.style.width = '0%');
                     document.querySelectorAll('.reduction-value').forEach(el => el.textContent = '0 dB');
                     
                     // Log success message
-                    logToConsole('Playback stopped completely', 'success');
+                    logToConsole('Previous playback stopped', 'success');
                 } catch (error) {
                     logToConsole(`Error stopping playback: ${error.message}`, 'error');
                     console.error(error);
                 }
-
-                logToConsole('Optimizing audio engine for performance...', 'info');
-
-                // For debugging gain reduction
-                const debugAudioMeters = () => {
-                    if (soundScript.isPlaying) {
-                        const compressorReduction = soundScript.getCompressorReduction();
-                        const limiterReduction = soundScript.getLimiterReduction();
-                        if (compressorReduction > 0.5 || limiterReduction > 0.5) {
-                            console.log(`Compressor: ${compressorReduction.toFixed(1)}dB, Limiter: ${limiterReduction.toFixed(1)}dB`);
-                        }
-                        requestAnimationFrame(debugAudioMeters);
-                    }
-                };
+        
+                // Show rendering progress indicator
+                const generateBtnOriginalText = generateBtn.textContent;
+                generateBtn.textContent = "Rendering...";
+                generateBtn.disabled = true;
+                
+                logToConsole('Starting audio rendering process...', 'info');
         
                 // Ensure Tone.js is started with user interaction
                 if (Tone.context.state !== 'running') {
                     logToConsole('Starting audio context...', 'info');
                     
                     try {
-                        // First try the simple approach
                         await Tone.start();
-                        logToConsole('Audio context started with Tone.start()', 'info');
+                        logToConsole('Audio context started', 'info');
                     } catch (startError) {
-                        // If that fails, try a more direct approach
-                        logToConsole('Tone.start() failed, trying alternative method...', 'warn');
+                        logToConsole('Trying alternative audio context start method...', 'warn');
                         
-                        // Create a silent buffer and play it to unlock audio
-                        const silentBuffer = Tone.context.createBuffer(1, 1, 22050);
-                        const source = Tone.context.createBufferSource();
-                        source.buffer = silentBuffer;
-                        source.connect(Tone.context.destination);
-                        source.start();
-                        
-                        // Then try to resume the context
-                        await Tone.context.resume();
-                        logToConsole('Audio context started with alternative method', 'info');
+                        try {
+                            // Try to resume the context
+                            await Tone.context.resume();
+                            logToConsole('Audio context resumed', 'info');
+                        } catch (resumeError) {
+                            logToConsole('Audio context resume failed, trying fallback method...', 'warn');
+                            
+                            // Create a silent buffer as a last resort
+                            const silentBuffer = Tone.context.createBuffer(1, 1, 22050);
+                            const source = Tone.context.createBufferSource();
+                            source.buffer = silentBuffer;
+                            source.connect(Tone.context.destination);
+                            source.start();
+                            
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            logToConsole('Audio context initialized with fallback method', 'info');
+                        }
                     }
                 }
                 
-                // Verify the context is actually running
-                if (Tone.context.state !== 'running') {
-                    logToConsole('Warning: Audio context not running! Sound may not play.', 'error');
-                } else {
-                    logToConsole('Audio context state: ' + Tone.context.state, 'success');
-                }
-                
-                // Apply additional optimizations
-                Tone.context.latencyHint = 'balanced';
-                if (soundScript.optimizeAudioPerformance) {
-                    soundScript.optimizeAudioPerformance();
-                }
-        
-                // Parse and play the code
+                // Parse the code
                 const code = editor.getValue();
                 logToConsole('Parsing script...', 'info');
                 await soundScript.parseScript(code);
-        
+                
+                // Update button status
+                generateBtn.textContent = "Processing...";
+                
+                // Pre-render the music to a buffer (with a small delay to update UI)
+                await new Promise(resolve => setTimeout(resolve, 50)); // Let UI update
+                logToConsole('Pre-rendering audio for smooth playback...', 'info');
+                
+                const buffer = await soundScript.renderToBuffer();
+                
+                // Apply volume setting from slider
                 const volume = parseInt(masterVolumeSlider.value) / 100;
-                logToConsole(`Playing with volume: ${volume}`, 'info');
-                await soundScript.play(volume);
-        
+                logToConsole(`Setting playback volume: ${volume * 100}%`, 'info');
+                soundScript.masterVolume.volume.value = soundScript.linearToDb(volume);
+                
+                // Update button status
+                generateBtn.textContent = "Starting playback...";
+                
+                // Another short delay to update UI
+                await new Promise(resolve => setTimeout(resolve, 50));
+                
+                // Play the rendered buffer
+                await soundScript.playRenderedBuffer();
+                
                 // Start visualizer
                 requestAnimationFrame(drawVisualizer);
-
                 updateProcessorVisualizers();
+                
+                // Enable WAV download now that we have a rendered buffer
+                downloadBtn.disabled = false;
+                
+                // Reset button
+                generateBtn.textContent = generateBtnOriginalText;
+                generateBtn.disabled = false;
+                
             } catch (error) {
                 logToConsole(`Error: ${error.message}`, 'error');
                 console.error(error);
+                
+                // Reset button state
+                generateBtn.textContent = "Generate & Play";
+                generateBtn.disabled = false;
             }
         });
 
         stopBtn.addEventListener('click', async () => {
             try {
-                // Call the enhanced stop method
-                await soundScript.stop();
-
+                // Stop rendered buffer if it's playing
+                if (soundScript.bufferPlayer) {
+                    soundScript.stopRenderedBuffer();
+                } else {
+                    // Fall back to the original stop method
+                    await soundScript.stop();
+                }
+        
                 // Stop all preview players
                 stopAllPreviews();
                 
@@ -459,14 +479,14 @@ document.addEventListener('DOMContentLoaded', function () {
                 // Clear both visualizer canvases
                 waveformCtx.clearRect(0, 0, waveformCanvas.width, waveformCanvas.height);
                 frequencyCtx.clearRect(0, 0, frequencyCanvas.width, frequencyCanvas.height);
-
+        
                 // Reset processor visualizers
                 document.querySelectorAll('.processor-signal').forEach(el => el.classList.remove('active'));
                 document.querySelectorAll('.reduction-bar').forEach(el => el.style.width = '0%');
                 document.querySelectorAll('.reduction-value').forEach(el => el.textContent = '0 dB');
                 
                 // Log success message
-                logToConsole('Playback stopped completely', 'success');
+                logToConsole('Playback stopped', 'success');
             } catch (error) {
                 logToConsole(`Error stopping playback: ${error.message}`, 'error');
                 console.error(error);
@@ -506,38 +526,17 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         downloadBtn.addEventListener('click', async () => {
-            /*try {
-                // Stop any current playback
-                await soundScript.stop();
-                
-                logToConsole('Starting WAV export...', 'info');
-                
-                // Ensure we have a fresh audio context
-                if (Tone.getContext().constructor.name !== 'Context') {
-                    logToConsole('Resetting audio context before export...', 'info');
-                    Tone.setContext(new Tone.Context());
+            try {
+                // If we already have a rendered buffer, use that directly
+                if (!soundScript.renderedBuffer) {
+                    logToConsole('No rendered audio available. Generate the music first.', 'error');
+                    return;
                 }
                 
-                // Ensure code is parsed before export
-                const code = editor.getValue();
-                if (!soundScript.lastParsedCode) {
-                    logToConsole('Parsing script first...', 'info');
-                    await soundScript.parseScript(code);
-                }
+                logToConsole('Preparing WAV file from rendered audio...', 'info');
                 
-                // Export to WAV with a timeout
-                logToConsole('Rendering audio to WAV file...', 'info');
-                
-                // Add a timeout to prevent UI freezes
-                const exportPromise = soundScript.exportToWav();
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error("WAV export timed out")), 30000);
-                });
-                
-                // Race the export against the timeout
-                const wavBlob = await Promise.race([exportPromise, timeoutPromise]);
-                
-                logToConsole('WAV rendering complete, preparing download...', 'success');
+                // Create WAV from the rendered buffer
+                const wavBlob = new Blob([audioBufferToWav(soundScript.renderedBuffer)], { type: 'audio/wav' });
                 
                 // Create download link
                 const url = URL.createObjectURL(wavBlob);
@@ -553,28 +552,11 @@ document.addEventListener('DOMContentLoaded', function () {
                 // Clean up
                 URL.revokeObjectURL(url);
                 
-                // Make sure we're back to the original context
-                logToConsole('Download started.', 'success');
-                
-                // Verify audio system is in a clean state for future playback
-                Tone.setContext(new Tone.Context());
-                logToConsole('Audio context reset for future playback.', 'info');
-                
                 logToConsole('WAV export complete!', 'success');
             } catch (error) {
                 logToConsole(`Error exporting WAV: ${error.message}`, 'error');
                 console.error("Error during WAV export:", error);
-                
-                // Restore audio context in case of failure
-                try {
-                    logToConsole('Restoring audio context after error...', 'info');
-                    Tone.setContext(new Tone.Context());
-                } catch (e) {
-                    console.error("Failed to restore context:", e);
-                }
-            }*/
-           // Show a message to the user
-        logToConsole('WAV export feature is temporarily work in progress.', 'info');
+            }
         });
 
         // Volume control

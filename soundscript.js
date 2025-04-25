@@ -30,10 +30,10 @@ class SoundScript {
                 attack: 0.003,
                 release: 0.25
             });
-    
+        
             this.masterLimiter = new Tone.Limiter(-3);
-    
-            // Connect effects chain
+        
+            // Connect effects chain - be more defensive with connections
             this.masterCompressor.connect(this.masterLimiter);
             this.masterLimiter.connect(this.masterVolume);
             
@@ -44,8 +44,23 @@ class SoundScript {
             
         } catch (err) {
             console.error("Error setting up audio chain:", err);
-            // Continue with basic functionality
-            this.log("Audio effects setup failed, using simplified audio chain", "warn");
+            
+            // Fallback to a simplified chain
+            try {
+                this.masterCompressor = new Tone.Compressor();
+                this.masterLimiter = new Tone.Limiter();
+                
+                // Simple straight chain
+                this.masterCompressor.connect(this.masterVolume);
+                this.masterLimiter.connect(this.masterVolume);
+                
+                this.log("Using simplified audio chain due to setup error", "warn");
+            } catch (fallbackError) {
+                console.error("Even fallback audio chain failed:", fallbackError);
+                this.masterCompressor = null;
+                this.masterLimiter = null;
+                this.log("Audio effects disabled due to errors", "error");
+            }
         }
 
         // Optimize audio processing for better performance
@@ -77,6 +92,218 @@ class SoundScript {
         
         // Add effects stack
         this.effectsStack = {};
+    }
+
+    // Pre-render the script to a buffer for smooth playback
+    async renderToBuffer() {
+        try {
+            this.log("Pre-rendering script to audio buffer...", "info");
+            
+            // Calculate total duration from script plus extra time for reverb/delay tails
+            const estimatedDuration = await this.calculateTotalDuration();
+            const duration = Math.max(estimatedDuration * 1.2 + 3, 10); // At least 10 seconds
+            this.log(`Estimated duration: ${duration.toFixed(1)}s`, "info");
+            
+            // Create an offline context with higher sample rate for better quality
+            const offlineCtx = new Tone.OfflineContext(2, duration, 48000);
+            const originalContext = Tone.getContext();
+            
+            try {
+                // Save original references
+                const originalSynths = this.synths;
+                const originalSamples = this.samples;
+                const originalMasterVolume = this.masterVolume;
+                const originalMasterCompressor = this.masterCompressor;
+                const originalMasterLimiter = this.masterLimiter;
+                const originalIsPlaying = this.isPlaying;
+                const originalBpm = this.bpm;
+                
+                // Reset state for clean rendering
+                this.synths = {};
+                this.samples = {};
+                this.isPlaying = false;
+                this.activeBlocksRunning = 0;
+                
+                // Switch to offline context
+                Tone.setContext(offlineCtx);
+                
+                // Create new effects chain in offline context
+                this.masterCompressor = new Tone.Compressor({
+                    threshold: -24,
+                    ratio: 4,
+                    attack: 0.003,
+                    release: 0.25
+                }).toDestination();
+                
+                this.masterLimiter = new Tone.Limiter(-1);
+                this.masterLimiter.connect(this.masterCompressor);
+                
+                this.masterVolume = new Tone.Volume(0);
+                this.masterVolume.connect(this.masterLimiter);
+                
+                // Re-create samples for offline context
+                for (const sampleName in originalSamples) {
+                    if (originalSamples[sampleName].buffer) {
+                        try {
+                            // Create new player in the offline context
+                            const player = new Tone.Player({
+                                url: originalSamples[sampleName].buffer,
+                                onload: () => {}
+                            }).connect(this.masterVolume);
+                            
+                            this.samples[sampleName] = { 
+                                player, 
+                                buffer: originalSamples[sampleName].buffer
+                            };
+                        } catch (sampleError) {
+                            console.error(`Error recreating sample ${sampleName}:`, sampleError);
+                        }
+                    }
+                }
+                
+                // Parse the script in offline context
+                await this.parseScript(this.lastParsedCode);
+                
+                // Reset BPM to ensure consistent timing
+                this.bpm = originalBpm;
+                if (Tone.Transport) {
+                    Tone.Transport.bpm.value = this.bpm;
+                }
+                
+                // Execute the script in offline context with higher quality settings
+                this.log("Starting offline rendering process...", "info");
+                this.isPlaying = true; // Set to true to allow execution
+                
+                // Execute the main block
+                if (this.blockDefinitions.main) {
+                    await new Promise(resolve => {
+                        this.executeBlock('main', resolve);
+                    });
+                    
+                    // Add a short delay after execution to capture effect tails
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                } else {
+                    throw new Error("No main block found in script");
+                }
+                
+                // Render the audio
+                this.log("Processing audio buffer...", "info");
+                const renderedBuffer = await offlineCtx.render();
+                this.log(`Rendering complete - ${renderedBuffer.duration.toFixed(1)}s audio generated`, "success");
+                
+                // Store the rendered buffer
+                this.renderedBuffer = renderedBuffer;
+                
+                // Restore original context
+                Tone.setContext(originalContext);
+                
+                // Restore original properties
+                this.synths = originalSynths;
+                this.samples = originalSamples;
+                this.masterVolume = originalMasterVolume;
+                this.masterCompressor = originalMasterCompressor;
+                this.masterLimiter = originalMasterLimiter;
+                this.isPlaying = originalIsPlaying;
+                
+                return renderedBuffer;
+            } catch (error) {
+                // Restore original context if something goes wrong
+                Tone.setContext(originalContext);
+                throw error;
+            }
+        } catch (error) {
+            console.error('Error during audio rendering:', error);
+            this.log(`Rendering failed: ${error.message}`, "error");
+            throw error;
+        }
+    }
+    
+    // Play the rendered buffer with high quality
+    async playRenderedBuffer() {
+        if (!this.renderedBuffer) {
+            this.log("No rendered audio available. Generate the music first.", "error");
+            return false;
+        }
+        
+        try {
+            // Ensure audio context is started
+            await this.ensureAudioContextStarted();
+            
+            // Clean up previous player if exists
+            if (this.bufferPlayer) {
+                this.bufferPlayer.stop();
+                this.bufferPlayer.dispose();
+                this.bufferPlayer = null;
+            }
+            
+            // Ensure we're using the main context
+            const context = Tone.getContext();
+            if (context.constructor.name !== 'Context') {
+                this.log("Playback requires main audio context. Restoring...", "info");
+                Tone.setContext(new Tone.Context());
+            }
+            
+            // Create a new AudioBuffer in the current context
+            const currentCtx = Tone.getContext().rawContext;
+            const newBuffer = currentCtx.createBuffer(
+                this.renderedBuffer.numberOfChannels,
+                this.renderedBuffer.length,
+                this.renderedBuffer.sampleRate
+            );
+            
+            // Copy data from rendered buffer to the new buffer
+            for (let channel = 0; channel < this.renderedBuffer.numberOfChannels; channel++) {
+                const channelData = this.renderedBuffer.getChannelData(channel);
+                const newChannelData = newBuffer.getChannelData(channel);
+                newChannelData.set(channelData);
+            }
+            
+            // Create a new player with the current context and properly transferred buffer
+            this.bufferPlayer = new Tone.Player({
+                url: newBuffer,
+                loop: false,
+                fadeIn: 0.01,
+                fadeOut: 0.1
+            });
+            
+            // Connect to the audio chain if it exists, otherwise direct to master volume
+            if (this.masterCompressor) {
+                this.bufferPlayer.connect(this.masterCompressor);
+            } else {
+                this.bufferPlayer.connect(this.masterVolume);
+            }
+            
+            // Wait for player to be ready
+            await Tone.loaded();
+            
+            // Start playback
+            this.bufferPlayer.start();
+            this.isPlaying = true;
+            
+            this.log("Playing rendered audio buffer", "success");
+            return true;
+        } catch (error) {
+            console.error("Error playing rendered buffer:", error);
+            this.log(`Playback error: ${error.message}`, "error");
+            return false;
+        }
+    }
+    
+    // Stop the buffer playback
+    stopRenderedBuffer() {
+        if (this.bufferPlayer) {
+            try {
+                this.bufferPlayer.stop();
+                this.isPlaying = false;
+                this.log("Playback stopped", "info");
+                return true;
+            } catch (error) {
+                console.error("Error stopping playback:", error);
+                this.log(`Error stopping playback: ${error.message}`, "error");
+                return false;
+            }
+        }
+        return false;
     }
 
     // Add methods to manage effect states
@@ -1348,17 +1575,52 @@ class SoundScript {
 
     // Set limiter parameters
     setLimiterParams(threshold, release, enabled) {
+        // Check if masterLimiter exists before trying to set properties
+        if (!this.masterLimiter) {
+            console.warn("Limiter not initialized, can't set parameters");
+            return;
+        }
+        
         if (!enabled) {
             // When disabled, set threshold very high so it never triggers
             this.masterLimiter.threshold.value = 20; // Well above 0dB
             return;
         }
-
+    
         this.masterLimiter.threshold.value = threshold;
         this.masterLimiter.release.value = release;
         
         // Log settings for debugging
         console.log(`Limiter set: threshold=${threshold}dB, release=${release}s`);
+    }
+
+    async ensureAudioContextStarted() {
+        if (Tone.context.state !== 'running') {
+            try {
+                // Try to start the Tone.js context
+                await Tone.start();
+                this.log("Audio context started successfully", "success");
+                return true;
+            } catch (error) {
+                // Fall back to other methods if the first attempt fails
+                try {
+                    await Tone.context.resume();
+                    this.log("Audio context resumed successfully", "success");
+                    return true;
+                } catch (resumeError) {
+                    // Last resort - create a silent buffer and play it
+                    const silentBuffer = Tone.context.createBuffer(1, 1, 22050);
+                    const source = Tone.context.createBufferSource();
+                    source.buffer = silentBuffer;
+                    source.connect(Tone.context.destination);
+                    source.start();
+                    
+                    this.log("Attempted to start audio with silent buffer", "warn");
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     // Register console callback
@@ -1599,32 +1861,130 @@ class SoundScript {
     async calculateTotalDuration() {
         try {
             let totalDuration = 0;
+            const processedBlocks = new Set();
             
-            // Parse through main block to estimate duration
-            if (this.blockDefinitions.main) {
-                const lines = this.blockDefinitions.main;
+            // Function to recursively estimate block duration
+            const estimateBlockDuration = (blockName) => {
+                if (processedBlocks.has(blockName)) return 0; // Prevent infinite recursion
+                processedBlocks.add(blockName);
+                
+                if (!this.blockDefinitions[blockName]) return 0;
+                
+                let blockDuration = 0;
+                const lines = this.blockDefinitions[blockName];
                 
                 for (const line of lines) {
+                    if (!line.trim() || line.trim().startsWith('//')) continue;
+                    
                     const [command, ...args] = line.trim().split(/\s+/);
                     
                     switch (command) {
                         case 'wait':
+                            // Convert beats to seconds based on BPM
+                            const beats = parseFloat(args[0]) || 0;
+                            blockDuration += (beats * 60) / (this.bpm || 120);
+                            break;
                         case 'waitsec':
-                            totalDuration += parseFloat(args[0]) || 0;
+                            blockDuration += parseFloat(args[0]) || 0;
                             break;
                         case 'tone':
-                            totalDuration += parseFloat(args[1]) || 0.5;
+                        case 'tones':
+                            // Get duration from args
+                            const lastArg = args[args.length - 1];
+                            if (lastArg.endsWith('b')) {
+                                // Duration in beats
+                                const barBeats = parseFloat(lastArg) || 0.5;
+                                blockDuration += (barBeats * 4 * 60) / (this.bpm || 120);
+                            } else {
+                                // Duration in seconds
+                                blockDuration += parseFloat(lastArg) || 0.5;
+                            }
                             break;
                         case 'play':
-                            // Add estimated duration for played blocks
-                            totalDuration += 5; // Conservative estimate
+                            if (args[0] === 'together') {
+                                // For parallel blocks, take the duration of the longest one
+                                const blockNames = args.slice(1);
+                                let maxSubDuration = 0;
+                                for (const subBlock of blockNames) {
+                                    const subDuration = estimateBlockDuration(subBlock);
+                                    maxSubDuration = Math.max(maxSubDuration, subDuration);
+                                }
+                                blockDuration += maxSubDuration;
+                            } else {
+                                // Sequential block
+                                const subBlockName = args[0];
+                                blockDuration += estimateBlockDuration(subBlockName);
+                            }
+                            break;
+                        case 'loop':
+                            // Find matching end and estimate loop body duration
+                            const iterations = parseInt(args[0]) || 1;
+                            const loopBodyLines = [];
+                            let loopDepth = 0;
+                            let foundEnd = false;
+                            
+                            for (let i = lines.indexOf(line) + 1; i < lines.length; i++) {
+                                const loopLine = lines[i];
+                                const [loopCommand] = loopLine.trim().split(/\s+/);
+                                
+                                if (loopCommand === 'loop') {
+                                    loopDepth++;
+                                } else if (loopCommand === 'end' && loopDepth === 0) {
+                                    foundEnd = true;
+                                    break;
+                                } else if (loopCommand === 'end') {
+                                    loopDepth--;
+                                }
+                                
+                                loopBodyLines.push(loopLine);
+                            }
+                            
+                            if (foundEnd) {
+                                // Estimate loop body duration
+                                let loopBodyDuration = 0;
+                                for (const loopLine of loopBodyLines) {
+                                    const [loopCommand, ...loopArgs] = loopLine.trim().split(/\s+/);
+                                    switch (loopCommand) {
+                                        case 'wait':
+                                            const loopBeats = parseFloat(loopArgs[0]) || 0;
+                                            loopBodyDuration += (loopBeats * 60) / (this.bpm || 120);
+                                            break;
+                                        case 'waitsec':
+                                            loopBodyDuration += parseFloat(loopArgs[0]) || 0;
+                                            break;
+                                        case 'tone':
+                                        case 'tones':
+                                            const loopLastArg = loopArgs[loopArgs.length - 1];
+                                            loopBodyDuration += parseFloat(loopLastArg) || 0.5;
+                                            break;
+                                    }
+                                }
+                                
+                                // Add total loop duration
+                                blockDuration += loopBodyDuration * iterations;
+                            } else {
+                                // If end not found, add a conservative estimate
+                                blockDuration += iterations * 2;
+                            }
+                            break;
+                        case 'waitforfinish':
+                            // Add 1 second for potential active blocks to finish
+                            blockDuration += 1;
                             break;
                     }
                 }
+                
+                // Account for potential effect tails (reverb, delay)
+                return blockDuration + 1.5; // Add 1.5 seconds for effect tails
+            };
+            
+            // Start with main block
+            if (this.blockDefinitions.main) {
+                totalDuration = estimateBlockDuration('main');
             }
             
-            // Add some padding and ensure minimum duration
-            return Math.max(30, totalDuration * 1.5);
+            // Ensure minimum duration and add some padding
+            return Math.max(10, totalDuration * 1.1);
         } catch (error) {
             console.error('Error calculating duration:', error);
             return 30; // Default to 30 seconds if calculation fails
